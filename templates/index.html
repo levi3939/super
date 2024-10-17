@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>订单处理系统</title>
+</head>
+<body>
+    <h1>订单处理系统</h1>
+    <form action="/" method="post" enctype="multipart/form-data">
+        <textarea name="order_text" rows="10" cols="50" placeholder="粘贴订单文本"></textarea>
+        <br>
+        <input type="file" name="file" accept=".doc,.docx">
+        <br>
+        <input type="submit" value="处理订单">
+    </form>
+    <hr>
+    <form action="/parse" method="post">
+        <input type="text" name="batch_id" placeholder="输入批次ID">
+        <input type="submit" value="解析订单">
+    </form>
+    <hr>
+    <form action="/export" method="post">
+        <input type="text" name="batch_id" placeholder="输入批次ID">
+        <input type="submit" value="导出结果">
+    </form>
+</body>
+</html>
