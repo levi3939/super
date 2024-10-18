@@ -28,7 +28,7 @@
 1. 订单分批：
 • 描述：根据 DeepSeek v2.5 API 的限制，将订单数据按规定的字符数分批处理。
 • 目的：避免一次向 API 输入过多字符，导致响应被截断或请求失败。
-• 注意：需参考 API 文档（https://api-docs.deepseek.com/zh-cn/）确定每批的最大字符数。
+• 注意：需参考 API 文档（@https://api-docs.deepseek.com/zh-cn/）确定每批的最大字符数。
 2. 去除无效信息：
 • 描述：使用 DeepSeek v2.5 API 对每批订单数据进行处理，删除无效信息。
 3. 订单拆分与存储：

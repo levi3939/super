@@ -4,25 +4,166 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>订单处理系统</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            line-height: 1.6;
+            margin: 0;
+            padding: 20px;
+            background-color: #f4f4f4;
+        }
+        .container {
+            max-width: 800px;
+            margin: auto;
+            background: white;
+            padding: 20px;
+            border-radius: 5px;
+            box-shadow: 0 0 10px rgba(0,0,0,0.1);
+        }
+        h1 {
+            color: #333;
+            text-align: center;
+        }
+        form {
+            margin-bottom: 20px;
+        }
+        textarea, input[type="text"], input[type="file"] {
+            width: 100%;
+            padding: 10px;
+            margin-bottom: 10px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+        }
+        input[type="submit"] {
+            background-color: #4CAF50;
+            color: white;
+            padding: 10px 15px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        input[type="submit"]:hover {
+            background-color: #45a049;
+        }
+        hr {
+            border: 0;
+            height: 1px;
+            background-color: #ddd;
+            margin: 20px 0;
+        }
+        #message {
+            margin-top: 20px;
+            padding: 10px;
+            border-radius: 4px;
+            display: none;
+        }
+        .success {
+            background-color: #d4edda;
+            color: #155724;
+        }
+        .error {
+            background-color: #f8d7da;
+            color: #721c24;
+        }
+    </style>
 </head>
 <body>
-    <h1>订单处理系统</h1>
-    <form action="/" method="post" enctype="multipart/form-data">
-        <textarea name="order_text" rows="10" cols="50" placeholder="粘贴订单文本"></textarea>
-        <br>
-        <input type="file" name="file" accept=".doc,.docx">
-        <br>
-        <input type="submit" value="处理订单">
-    </form>
-    <hr>
-    <form action="/parse" method="post">
-        <input type="text" name="batch_id" placeholder="输入批次ID">
-        <input type="submit" value="解析订单">
-    </form>
-    <hr>
-    <form action="/export" method="post">
-        <input type="text" name="batch_id" placeholder="输入批次ID">
-        <input type="submit" value="导出结果">
-    </form>
+    <div class="container">
+        <h1>订单处理系统</h1>
+        <form id="orderForm" action="/" method="post" enctype="multipart/form-data">
+            <textarea name="order_text" rows="10" placeholder="粘贴订单文本"></textarea>
+            <br>
+            <input type="file" name="file" accept=".doc,.docx">
+            <br>
+            <input type="submit" value="处理订单">
+        </form>
+        <hr>
+        <form id="parseForm" action="/parse" method="post">
+            <input type="text" name="batch_id" placeholder="输入批次ID">
+            <input type="submit" value="解析订单">
+        </form>
+        <hr>
+        <form id="exportForm" action="/export" method="post">
+            <input type="text" name="batch_id" placeholder="输入批次ID">
+            <input type="submit" value="导出结果">
+        </form>
+        <div id="message"></div>
+    </div>
+
+    <script>
+        function showMessage(message, isError = false) {
+            const messageDiv = document.getElementById('message');
+            messageDiv.textContent = message;
+            messageDiv.className = isError ? 'error' : 'success';
+            messageDiv.style.display = 'block';
+            setTimeout(() => {
+                messageDiv.style.display = 'none';
+            }, 5000);
+        }
+
+        document.getElementById('orderForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const formData = new FormData(e.target);
+            try {
+                const response = await fetch('/', {
+                    method: 'POST',
+                    body: formData
+                });
+                if (response.ok) {
+                    const result = await response.text();
+                    showMessage(result);
+                } else {
+                    showMessage('订单处理失败', true);
+                }
+            } catch (error) {
+                showMessage('发生错误: ' + error.message, true);
+            }
+        });
+
+        document.getElementById('parseForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const formData = new FormData(e.target);
+            try {
+                const response = await fetch('/parse', {
+                    method: 'POST',
+                    body: formData
+                });
+                if (response.ok) {
+                    showMessage('订单解析成功');
+                } else {
+                    showMessage('订单解析失败', true);
+                }
+            } catch (error) {
+                showMessage('发生错误: ' + error.message, true);
+            }
+        });
+
+        document.getElementById('exportForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const formData = new FormData(e.target);
+            try {
+                const response = await fetch('/export', {
+                    method: 'POST',
+                    body: formData
+                });
+                if (response.ok) {
+                    const blob = await response.blob();
+                    const url = window.URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.style.display = 'none';
+                    a.href = url;
+                    a.download = 'orders_export.xlsx';
+                    document.body.appendChild(a);
+                    a.click();
+                    window.URL.revokeObjectURL(url);
+                    showMessage('导出成功');
+                } else {
+                    showMessage('导出失败', true);
+                }
+            } catch (error) {
+                showMessage('发生错误: ' + error.message, true);
+            }
+        });
+    </script>
 </body>
 </html>
