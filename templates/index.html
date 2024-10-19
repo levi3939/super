@@ -78,16 +78,8 @@
             <input type="submit" value="处理订单">
         </form>
         <hr>
-        <form id="parseForm" action="/parse" method="post">
-            <input type="text" name="batch_id" placeholder="输入批次ID">
-            <input type="submit" value="解析订单">
-        </form>
-        <hr>
-        <form id="exportForm" action="/export" method="post">
-            <input type="text" name="batch_id" placeholder="输入批次ID">
-            <input type="submit" value="导出结果">
-        </form>
-        <div id="message"></div>
+        <button id="removeDuplicatesBtn" class="btn btn-warning">去除重复订单</button>
+        <div id="duplicateMessage"></div>
     </div>
 
     <script>
@@ -120,45 +112,14 @@
             }
         });
 
-        document.getElementById('parseForm').addEventListener('submit', async (e) => {
-            e.preventDefault();
-            const formData = new FormData(e.target);
+        document.getElementById('removeDuplicatesBtn').addEventListener('click', async () => {
             try {
-                const response = await fetch('/parse', {
-                    method: 'POST',
-                    body: formData
-                });
+                const response = await fetch('/remove_duplicates', { method: 'POST' });
+                const result = await response.json();
                 if (response.ok) {
-                    showMessage('订单解析成功');
+                    showMessage(result.message);
                 } else {
-                    showMessage('订单解析失败', true);
-                }
-            } catch (error) {
-                showMessage('发生错误: ' + error.message, true);
-            }
-        });
-
-        document.getElementById('exportForm').addEventListener('submit', async (e) => {
-            e.preventDefault();
-            const formData = new FormData(e.target);
-            try {
-                const response = await fetch('/export', {
-                    method: 'POST',
-                    body: formData
-                });
-                if (response.ok) {
-                    const blob = await response.blob();
-                    const url = window.URL.createObjectURL(blob);
-                    const a = document.createElement('a');
-                    a.style.display = 'none';
-                    a.href = url;
-                    a.download = 'orders_export.xlsx';
-                    document.body.appendChild(a);
-                    a.click();
-                    window.URL.revokeObjectURL(url);
-                    showMessage('导出成功');
-                } else {
-                    showMessage('导出失败', true);
+                    showMessage('去重操作失败: ' + result.error, true);
                 }
             } catch (error) {
                 showMessage('发生错误: ' + error.message, true);

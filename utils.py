@@ -12,6 +12,7 @@ from openai import OpenAI
 from dotenv import load_dotenv
 from datetime import datetime
 import json
+from sqlalchemy import func
 
 # 加载环境变量
 load_dotenv()
@@ -49,10 +50,6 @@ def process_orders(input_data: str):
     log_order_processing(len(batches))
 
     return f"成功处理并存储 {processed_orders} 个订单，共 {len(batches)} 个批次。"
-
-def remove_duplicates():
-    # 实现订单去重逻辑
-    pass
 
 def parse_orders(batch_id):
     # 实现订单解析逻辑
@@ -235,3 +232,35 @@ def generate_batch_id() -> str:
     """
     # 使用时间戳生成唯一的批次 ID
     return datetime.now().strftime('%m%d%H%M%S')
+
+def remove_duplicates():
+    """
+    检查数据库中的重复订单并删除，每个重复订单只保留最后一条（最晚入库的记录）。
+    
+    Returns:
+        int: 删除的重复订单数量
+    """
+    try:
+        # 查找重复的订单
+        duplicates = db_session.query(
+            Order.original_text,
+            func.count(Order.id).label('count'),
+            func.max(Order.id).label('max_id')  # 使用 max 而不是 min
+        ).group_by(Order.original_text).having(func.count(Order.id) > 1).all()
+
+        total_removed = 0
+        for duplicate in duplicates:
+            # 删除除最后一个实例外的所有重复订单
+            removed = db_session.query(Order).filter(
+                Order.original_text == duplicate.original_text,
+                Order.id != duplicate.max_id  # 保留 max_id 对应的记录
+            ).delete(synchronize_session=False)
+            total_removed += removed
+
+        db_session.commit()
+        logging.info(f"成功删除 {total_removed} 个重复订单")
+        return total_removed
+    except Exception as e:
+        db_session.rollback()
+        logging.error(f"删除重复订单时发生错误：{str(e)}")
+        raise
