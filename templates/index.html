@@ -51,7 +51,7 @@
             background-color: #ddd;
             margin: 20px 0;
         }
-        #message {
+        #message, #parseMessage, #exportMessage {
             margin-top: 20px;
             padding: 10px;
             border-radius: 4px;
@@ -65,6 +65,32 @@
             background-color: #f8d7da;
             color: #721c24;
         }
+        .btn {
+            background-color: #4CAF50;
+            color: white;
+            padding: 10px 15px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            margin-right: 10px;
+        }
+        .btn:hover {
+            background-color: #45a049;
+        }
+        .progress-bar {
+            width: 100%;
+            background-color: #e0e0e0;
+            padding: 3px;
+            border-radius: 3px;
+            box-shadow: inset 0 1px 3px rgba(0, 0, 0, .2);
+        }
+        .progress-bar-fill {
+            display: block;
+            height: 22px;
+            background-color: #659cef;
+            border-radius: 3px;
+            transition: width 500ms ease-in-out;
+        }
     </style>
 </head>
 <body>
@@ -75,55 +101,89 @@
             <br>
             <input type="file" name="file" accept=".doc,.docx">
             <br>
-            <input type="submit" value="处理订单">
+            <input type="submit" value="处理订单" class="btn">
         </form>
         <hr>
-        <button id="removeDuplicatesBtn" class="btn btn-warning">去除重复订单</button>
+        <button id="removeDuplicatesBtn" class="btn">去除重复订单</button>
+        <button id="parseAndExportBtn" class="btn">订单解析并导出</button>
+        <div id="message"></div>
         <div id="duplicateMessage"></div>
+        <div id="parseMessage"></div>
+        <div id="exportMessage"></div>
+        <div id="progressBar" class="progress-bar" style="display:none;">
+            <span class="progress-bar-fill" style="width: 0%;"></span>
+        </div>
+        <div id="statusMessage"></div>
     </div>
 
+    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
     <script>
-        function showMessage(message, isError = false) {
-            const messageDiv = document.getElementById('message');
-            messageDiv.textContent = message;
-            messageDiv.className = isError ? 'error' : 'success';
-            messageDiv.style.display = 'block';
-            setTimeout(() => {
-                messageDiv.style.display = 'none';
-            }, 5000);
-        }
+        $(document).ready(function() {
+            function updateProgress(progress, message) {
+                $('#progressBar').show();
+                $('.progress-bar-fill').css('width', progress + '%');
+                $('#statusMessage').text(message);
+            }
 
-        document.getElementById('orderForm').addEventListener('submit', async (e) => {
-            e.preventDefault();
-            const formData = new FormData(e.target);
-            try {
-                const response = await fetch('/', {
-                    method: 'POST',
-                    body: formData
+            $('#orderForm').submit(function(e) {
+                e.preventDefault();
+                var formData = new FormData(this);
+                $.ajax({
+                    url: '/',
+                    type: 'POST',
+                    data: formData,
+                    processData: false,
+                    contentType: false,
+                    success: function(response) {
+                        $('#message').text(response).removeClass('error').addClass('success').show();
+                        updateProgress(100, '处理完成');
+                    },
+                    error: function(xhr, status, error) {
+                        $('#message').text(xhr.responseText).removeClass('success').addClass('error').show();
+                        updateProgress(100, '处理失败');
+                    }
                 });
-                if (response.ok) {
-                    const result = await response.text();
-                    showMessage(result);
-                } else {
-                    showMessage('订单处理失败', true);
-                }
-            } catch (error) {
-                showMessage('发生错误: ' + error.message, true);
-            }
-        });
+                updateProgress(0, '开始处理订单...');
+            });
 
-        document.getElementById('removeDuplicatesBtn').addEventListener('click', async () => {
-            try {
-                const response = await fetch('/remove_duplicates', { method: 'POST' });
-                const result = await response.json();
-                if (response.ok) {
-                    showMessage(result.message);
-                } else {
-                    showMessage('去重操作失败: ' + result.error, true);
-                }
-            } catch (error) {
-                showMessage('发生错误: ' + error.message, true);
-            }
+            $('#removeDuplicatesBtn').click(function() {
+                $.ajax({
+                    url: '/remove_duplicates',
+                    type: 'POST',
+                    success: function(response) {
+                        $('#duplicateMessage').text(response.message).removeClass('error').addClass('success').show();
+                        updateProgress(100, '去重完成');
+                    },
+                    error: function(xhr, status, error) {
+                        $('#duplicateMessage').text(xhr.responseJSON.error).removeClass('success').addClass('error').show();
+                        updateProgress(100, '去重失败');
+                    }
+                });
+                updateProgress(0, '开始去除重复订单...');
+            });
+
+            $('#parseAndExportBtn').click(function() {
+                $.ajax({
+                    url: '/parse_and_export',
+                    type: 'POST',
+                    success: function(response) {
+                        $('#parseMessage').text(response.message).removeClass('error').addClass('success').show();
+                        if (response.file_path) {
+                            var downloadLink = $('<a>')
+                                .attr('href', '/download/' + encodeURIComponent(response.file_path))
+                                .attr('download', '')
+                                .text('下载 Excel 文件');
+                            $('#parseMessage').append('<br>').append(downloadLink);
+                        }
+                        updateProgress(100, '解析和导出完成');
+                    },
+                    error: function(xhr, status, error) {
+                        $('#parseMessage').text(xhr.responseJSON.error).removeClass('success').addClass('error').show();
+                        updateProgress(100, '解析和导出失败');
+                    }
+                });
+                updateProgress(0, '开始解析和导出订单...');
+            });
         });
     </script>
 </body>

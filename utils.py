@@ -12,7 +12,11 @@ from openai import OpenAI
 from dotenv import load_dotenv
 from datetime import datetime
 import json
-from sqlalchemy import func
+from sqlalchemy import func, or_
+import pandas as pd
+from tkinter import Tk, filedialog
+import os
+import tkinter as tk
 
 # 加载环境变量
 load_dotenv()
@@ -23,7 +27,7 @@ client = OpenAI(
     base_url="https://api.deepseek.com"
 )
 
-def process_orders(input_data: str):
+def process_orders(input_data: str, progress_callback):
     """
     处理输入的订单数据。
 
@@ -37,29 +41,146 @@ def process_orders(input_data: str):
     batches = split_orders(input_data)
 
     processed_orders = 0
-    for batch in batches:
+    total_batches = len(batches)
+    
+    for i, batch in enumerate(batches):
         # 清洗数据并获取订单列表
         orders_list = clean_data_with_api(batch)
 
-        # 将订单列表存入数据库
+        # 将订单列表存入数据
         save_to_database(orders_list)
 
         processed_orders += len(orders_list)
+        progress = (i + 1) / total_batches * 100
+        progress_callback(progress, f"已处理 {processed_orders} 个订单")
 
     # 记录日志
-    log_order_processing(len(batches))
+    log_order_processing(total_batches)
 
-    return f"成功处理并存储 {processed_orders} 个订单，共 {len(batches)} 个批次。"
+    return f"成功处理并存储 {processed_orders} 个订单，共 {total_batches} 个批次。"
 
-def parse_orders(batch_id):
-    # 实现订单解析逻辑
-    # 这里需要调用 DeepSeek API 进行订单解析
-    # 然后更新数据库中的订单信息
-    pass
+def parse_orders():
+    """
+    解析数据库中尚未解析的订单。
+    """
+    try:
+        unprocessed_orders = Order.query.filter(or_(
+            Order.address == '',
+            Order.address == None
+        )).all()
+        
+        logging.info(f"找到 {len(unprocessed_orders)} 个未解析的订单")
 
-def export_to_excel(batch_id):
-    # 实现导出到 Excel 的逻辑
-    pass
+        parsed_count = 0
+        for order in unprocessed_orders:
+            parsed_data = parse_order_with_api(order.original_text)
+            
+            if parsed_data:  # 只有在成功解析时才更新订单信息
+                order.address = parsed_data.get('地址', '')
+                order.subject = parsed_data.get('科目', '')
+                order.tutoring_time = parsed_data.get('上课时间', '')
+                order.requirements = parsed_data.get('要求', '')
+                order.price = parsed_data.get('价格', '')
+                order.teacher_gender = parsed_data.get('老师性别', '')
+                order.student_info = parsed_data.get('学生情况', '')
+                
+                db_session.add(order)
+                parsed_count += 1
+            else:
+                logging.warning(f"订单 {order.id} 解析失败")
+
+        db_session.commit()
+        logging.info(f"成功解析并更新 {parsed_count} 个订单")
+        return parsed_count
+    except Exception as e:
+        db_session.rollback()
+        logging.error(f"解析订单时发生错误：{str(e)}")
+        raise
+
+def parse_order_with_api(order_text):
+    """
+    使用 DeepSeek API 解析单个订单。
+    """
+    try:
+        response = client.chat.completions.create(
+            model="deepseek-chat",
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "你是一个专门用于解析订单信息的助手。请从给定的订单文本中提取以下信息："
+                        "地址、科目、上课时间、要求、价格、老师性别、学生情况。"
+                        "请以JSON格式返回结果，键名为上述字段名。不要包含任何额外的解释或格式。"
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": f"请解析以下订单信息：\n\n{order_text}",
+                },
+            ],
+            stream=False
+        )
+
+        # 获取API响应内容
+        content = response.choices[0].message.content.strip()
+        logging.debug(f"API原始响应：{content}")
+
+        # 尝试直接解析JSON
+        try:
+            parsed_data = json.loads(content)
+            return parsed_data
+        except json.JSONDecodeError:
+            # 如果直接解析失败，尝试提取JSON部分
+            import re
+            json_match = re.search(r'\{.*\}', content, re.DOTALL)
+            if json_match:
+                try:
+                    parsed_data = json.loads(json_match.group())
+                    return parsed_data
+                except json.JSONDecodeError:
+                    logging.error("无从API响应中提取有效的JSON数据")
+            else:
+                logging.error("API响应中没有找到JSON格式的数据")
+
+        # 如果所有尝试都失败，返回空字典
+        return {}
+
+    except Exception as e:
+        logging.error(f"调用 DeepSeek API 解析订单时发生错误：{str(e)}")
+        return {}
+
+def export_to_excel(data):
+    """
+    将解析后的订单结果导出为 Excel 文件。
+
+    Args:
+        data (list): 包含订单数据的列表。
+
+    Returns:
+        str: 导出的 Excel 文件名。
+    """
+    try:
+        df = pd.DataFrame(data)
+        
+        # 生成文件名
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"orders_export_{timestamp}.xlsx"
+        
+        # 确保 exports 目录存在
+        exports_dir = os.path.join(os.getcwd(), 'exports')
+        os.makedirs(exports_dir, exist_ok=True)
+        
+        # 构建完整的文件路径
+        file_path = os.path.join(exports_dir, filename)
+        
+        # 导出到 Excel
+        df.to_excel(file_path, index=False)
+        
+        logging.info(f"成功导出 {len(data)} 个订单到 {file_path}")
+        return filename  # 只返回文件名,不返回完整路径
+    except Exception as e:
+        logging.error(f"导出订单到 Excel 时发生错误：{str(e)}")
+        raise
 
 def allowed_file(filename):
     """
@@ -114,14 +235,14 @@ def clean_data_with_api(batch: str) -> List[str]:
                     "content": (
                         "你是一个专门用于清理和格式化订单数据的助手。"
                         "请删除所有无关信息，只保留有效的订单数据。"
-                        "请判断订单的分割点，并将每个订单作为单独的条目返回。"
+                        "请判断订单的分割点，并将每个单作为单的条目返回。"
                         "请将清理后的订单列表以 JSON 数组的形式返回，每个元素是一个订单的字符串。"
                         "注意：不要包含任何额外的文本或格式，例如代码块标记、注释或多余的空格。"
                     ),
                 },
                 {
                     "role": "user",
-                    "content": f"请清理以下订单数据，删除所有无效信息，并分割成单独的订单：\n\n{batch}",
+                    "content": f"请清理以下订单数据，删除所有无效信息，并分成单独的订单：\n\n{batch}",
                 },
             ],
             stream=False
@@ -173,7 +294,7 @@ def clean_data_with_api(batch: str) -> List[str]:
 
     except Exception as e:
         logging.error(f"调用 DeepSeek API 时发生错误：{str(e)}")
-        return []  # 如果 API 调用失败，返回空列表
+        return []  # 如果 API 调用失败，回空列表
 
 def save_to_database(orders_list: List[str]):
     """
@@ -230,10 +351,10 @@ def generate_batch_id() -> str:
     Returns:
         str: 生成的批次 ID。
     """
-    # 使用时间戳生成唯一的批次 ID
+    # 使用时间戳生唯一的批次 ID
     return datetime.now().strftime('%m%d%H%M%S')
 
-def remove_duplicates():
+def remove_duplicates(progress_callback):
     """
     检查数据库中的重复订单并删除，每个重复订单只保留最后一条（最晚入库的记录）。
     
@@ -248,14 +369,18 @@ def remove_duplicates():
             func.max(Order.id).label('max_id')  # 使用 max 而不是 min
         ).group_by(Order.original_text).having(func.count(Order.id) > 1).all()
 
+        total_duplicates = len(duplicates)
         total_removed = 0
-        for duplicate in duplicates:
+        for i, duplicate in enumerate(duplicates):
             # 删除除最后一个实例外的所有重复订单
             removed = db_session.query(Order).filter(
                 Order.original_text == duplicate.original_text,
                 Order.id != duplicate.max_id  # 保留 max_id 对应的记录
             ).delete(synchronize_session=False)
             total_removed += removed
+            
+            progress = (i + 1) / total_duplicates * 100
+            progress_callback(progress, f"已处理 {i + 1}/{total_duplicates} 组重复订单")
 
         db_session.commit()
         logging.info(f"成功删除 {total_removed} 个重复订单")
@@ -263,4 +388,63 @@ def remove_duplicates():
     except Exception as e:
         db_session.rollback()
         logging.error(f"删除重复订单时发生错误：{str(e)}")
+        raise
+
+def parse_and_export_orders(progress_callback):
+    """
+    解析数据库中尚未解析的订单,并同时导出为Excel文件。
+    """
+    try:
+        unprocessed_orders = Order.query.filter(or_(
+            Order.address == '',
+            Order.address == None
+        )).all()
+        
+        total_orders = len(unprocessed_orders)
+        logging.info(f"找到 {total_orders} 个未解析的订单")
+
+        parsed_data = []
+        for i, order in enumerate(unprocessed_orders):
+            parsed_order = parse_order_with_api(order.original_text)
+            
+            if parsed_order:  # 只有在成功解析时才更新订单信息
+                order.address = parsed_order.get('地址', '')
+                order.subject = parsed_order.get('科目', '')
+                order.tutoring_time = parsed_order.get('上课时间', '')
+                order.requirements = parsed_order.get('要求', '')
+                order.price = parsed_order.get('价格', '')
+                order.teacher_gender = parsed_order.get('老师性别', '')
+                order.student_info = parsed_order.get('学生情况', '')
+                
+                db_session.add(order)
+                parsed_data.append({
+                    '地址': order.address,
+                    '科目': order.subject,
+                    '上课时间': order.tutoring_time,
+                    '要求': order.requirements,
+                    '价格': order.price,
+                    '老师性别': order.teacher_gender,
+                    '学生情况': order.student_info,
+                    '原始订单': order.original_text
+                })
+            else:
+                logging.warning(f"订单 {order.id} 解析失败")
+            
+            progress = (i + 1) / total_orders * 90  # 解析占90%的进度
+            progress_callback(progress, f"已解析 {i + 1}/{total_orders} 个订单")
+
+        db_session.commit()
+        logging.info(f"成功解析并更新 {len(parsed_data)} 个订单")
+
+        if parsed_data:
+            progress_callback(95, "正在导出到Excel...")
+            file_path = export_to_excel(parsed_data)
+            progress_callback(100, "导出完成")
+            return len(parsed_data), file_path
+        else:
+            return 0, None
+
+    except Exception as e:
+        db_session.rollback()
+        logging.error(f"解析订单时发生错误：{str(e)}")
         raise
