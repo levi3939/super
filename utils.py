@@ -258,7 +258,7 @@ def clean_data_with_api(batch: str) -> List[str]:
         # 移除代码块标记（如果有）
         cleaned_data = cleaned_data.strip()
 
-        # 正则表达匹配 ``` 开头的代码块
+        # 正则表达配 ``` 开头的代码块
         import re
 
         # 匹配 ``` 开头和结尾的内容，包括可能的语言标识
@@ -300,42 +300,38 @@ def clean_data_with_api(batch: str) -> List[str]:
         logging.error(f"调用 DeepSeek API 时发生错误：{str(e)}")
         return []  # 如果 API 调用失败，回空列表
 
-def save_to_database(orders_list: List[str]):
-    """
-    将清洗后的订单列表存入数据库。
-
-    Args:
-        orders_list (List[str]): 清洗后的订单文本列表。
-    """
+def save_to_database(orders_list):
     try:
+        if not isinstance(orders_list, list):
+            raise TypeError("orders_list 必须是一个列表")
+        
         batch_id = generate_batch_id()
-        logging.info(f"开始保存 {len(orders_list)} 个订单到数据库，批次ID：{batch_id}")
         for order_text in orders_list:
-            # 创建新的 Order 对象
-            new_order = Order(
+            if not isinstance(order_text, str):
+                raise TypeError("每个订单必须是字符串类型")
+            
+            order = Order(
                 batch_id=batch_id,
                 original_text=order_text,
-                # 其他字段可以留空或设置为默认值
-                order_number='',
+                # 其他字段暂时留空，后续可以通过解析填充
                 address='',
                 subject='',
-                time=datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S'),
+                tutoring_time='',
                 requirements='',
-                price=''
+                price='',
+                teacher_gender='',
+                student_info='',
+                order_number=''
+                # 暂时注释掉 created_at 字段
+                # created_at=datetime.now()
             )
-
-            # 将新订单添加到数据库会话
-            db_session.add(new_order)
-
-        # 提交所有更改
+            db_session.add(order)
         db_session.commit()
         logging.info(f"成功保存 {len(orders_list)} 个订单到数据库，批次ID：{batch_id}")
     except Exception as e:
-        logging.error(f"保存订单到数据库时出错：{str(e)}")
         db_session.rollback()
-    finally:
-        # 关闭数据库会话
-        db_session.close()
+        logging.error(f"保存订单到数据库时出错：{str(e)}")
+        raise
 
 def log_order_processing(num_batches: int):
     """

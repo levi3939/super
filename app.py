@@ -189,6 +189,14 @@ def handle_calculate_commute_times():
 def progress_callback(progress, message):
     socketio.emit('progress_update', {'progress': progress, 'message': message})
 
+def test_db_connection():
+    try:
+        db_session.execute("SELECT 1")
+        logging.info("数据库连接测试成功")
+    except Exception as e:
+        logging.error(f"数据库连接测试失败：{str(e)}")
+
+# 在主函数中调用这个测试
 if __name__ == '__main__':
     test_db_connection()
     socketio.run(app, debug=True)
