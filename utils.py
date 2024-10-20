@@ -21,6 +21,7 @@ from geopy.geocoders import Nominatim
 from geopy.distance import geodesic
 import openpyxl
 import traceback
+import time
 
 # 加载环境变量
 load_dotenv()
@@ -246,7 +247,7 @@ def clean_data_with_api(batch: str) -> List[str]:
                 },
                 {
                     "role": "user",
-                    "content": f"请清理以下订单数据，删除所有无效信息，并分成单独的订单：\n\n{batch}",
+                    "content": f"请清理以下订单数据，删除所有无效信息，并分成单独的订���：\n\n{batch}",
                 },
             ],
             stream=False
@@ -359,7 +360,7 @@ def remove_duplicates(progress_callback):
     检查数据库中的重复订单并删除，每个重复订单只保留最后一条（最晚入库的记录）。
     
     Returns:
-        int: 删除的重复订单数量
+        int: 删除的复订量
     """
     try:
         # 首先检查是否存在任何重复
@@ -380,7 +381,7 @@ def remove_duplicates(progress_callback):
             func.max(Order.id).label('max_id')
         ).group_by(Order.original_text).having(func.count(Order.id) > 1).all()
 
-        logging.info(f"找到 {len(duplicates)} 组重复订单")
+        logging.info(f"找到 {len(duplicates)} ��重复订单")
 
         total_duplicates = len(duplicates)
         total_removed = 0
@@ -489,17 +490,24 @@ def geocode_baidu(address):
     url = "http://api.map.baidu.com/geocoding/v3/"
     params = {
         "address": address,
+        "city": "上海市",  # 假设所有地址都在上海，可以提高准确性
         "output": "json",
         "ak": ak
     }
     
-    response = requests.get(url, params=params)
-    data = response.json()
-    
-    if data['status'] == 0:
-        result = data['result']
-        return (result['location']['lat'], result['location']['lng'])
-    else:
+    try:
+        response = requests.get(url, params=params)
+        data = response.json()
+        
+        if data['status'] == 0:
+            result = data['result']
+            location = result['location']
+            return (location['lat'], location['lng'])
+        else:
+            logging.warning(f"地址 '{address}' 解析失败: {data['message']}")
+            return None
+    except Exception as e:
+        logging.error(f"地址 '{address}' 解析时发生错误: {str(e)}")
         return None
 
 def calculate_commute_times(excel_file, target_address, progress_callback):
@@ -508,67 +516,76 @@ def calculate_commute_times(excel_file, target_address, progress_callback):
     logging.info(f"目标地址: {target_address}")
 
     try:
-        # 读取Excel文件
         df = read_excel_file(excel_file)
         logging.info(f"成功读取Excel文件，共 {len(df)} 行数据")
         logging.info(f"列名: {df.columns.tolist()}")
         
-        # 确保必要的列存在
         required_columns = ['地址', '科目', '上课时间', '要求', '价格', '老师性别', '学生情况', '原始订单']
         missing_columns = [col for col in required_columns if col not in df.columns]
         if missing_columns:
             raise ValueError(f"Excel文件缺少以下必要的列: {', '.join(missing_columns)}")
         
-        # 获取目标地址的坐标
         target_coords = geocode_baidu(target_address)
         if not target_coords:
             raise ValueError("无法获取目标地址的坐标")
         logging.info(f"目标地址坐标: {target_coords}")
         
-        # 初始化新列
         df['通勤时间'] = ''
+        df['交通方式'] = ''
         
         total_rows = len(df)
         for index, row in df.iterrows():
             address = row['地址']
-            try:
-                # 获取订单地址的坐标
-                coords = geocode_baidu(address)
-                if coords:
-                    # 计算直线距离
-                    distance = geodesic(coords, target_coords).kilometers
-                    
-                    # 根据距离选择交通方式并计算时间
-                    if distance < 5:  # 假设5公里以内用自行车
-                        mode = "bicycling"
+            retry_count = 0
+            max_retries = 3
+
+            while retry_count < max_retries:
+                try:
+                    coords = geocode_baidu(address)
+                    if coords:
+                        commute_time, commute_mode = get_baidu_commute_time(coords, target_coords)
+                        
+                        if commute_time != float('inf'):
+                            df.at[index, '通勤时间'] = f"{commute_time:.0f}分钟"
+                            df.at[index, '交通方式'] = {
+                                'riding': '骑行',
+                                'transit': '公交/地铁'
+                            }.get(commute_mode, commute_mode)
+                        else:
+                            df.at[index, '通勤时间'] = '无法获取'
+                            df.at[index, '交通方式'] = '未知'
+                        
+                        logging.info(f"地址 '{address}' 的通勤时间: {df.at[index, '通勤时间']}，方式: {df.at[index, '交通方式']}")
+                        break  # 成功处理，跳出重试循环
                     else:
-                        mode = "transit"
-                    
-                    # 调用百度地图API获取实际通勤时间
-                    commute_time = get_baidu_commute_time(coords, target_coords, mode)
-                    
-                    df.at[index, '通勤时间'] = commute_time
-                    logging.info(f"地址 '{address}' 的通勤时间: {commute_time}")
-                else:
-                    df.at[index, '通勤时间'] = '地址无法解析'
-                    logging.warning(f"无法解析地址: {address}")
-            except Exception as e:
-                df.at[index, '通勤时间'] = f'错误: {str(e)}'
-                logging.error(f"处理地址 '{address}' 时发生错误: {str(e)}")
-                logging.error(traceback.format_exc())
-            
-            # 更新进度
+                        retry_count += 1
+                        if retry_count == max_retries:
+                            df.at[index, '通勤时间'] = '地址无法解析'
+                            df.at[index, '交通方式'] = '未知'
+                            logging.warning(f"无法解析地址 (已重试{max_retries}次): {address}")
+                        else:
+                            logging.info(f"重试解析地址 ({retry_count}/{max_retries}): {address}")
+                            time.sleep(1)  # 等待1秒后重试
+                except Exception as e:
+                    retry_count += 1
+                    if retry_count == max_retries:
+                        df.at[index, '通勤时间'] = f'错误: {str(e)}'
+                        df.at[index, '交通方式'] = '未知'
+                        logging.error(f"处理地址 '{address}' 时发生错误 (已重试{max_retries}次): {str(e)}")
+                        logging.error(traceback.format_exc())
+                    else:
+                        logging.info(f"重试处理地址 ({retry_count}/{max_retries}): {address}")
+                        time.sleep(1)  # 等待1秒后重试
+
             progress = (index + 1) / total_rows * 100
             progress_callback(progress, f"已处理 {index + 1}/{total_rows} 个地址")
         
-        # 修改这部分
         exports_dir = os.path.join(os.getcwd(), 'exports')
         output_filename = f"orders_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}_with_commute_times.xlsx"
         output_file = os.path.join(exports_dir, output_filename)
         df.to_excel(output_file, index=False)
         logging.info(f"尝试生成包含通勤时间的Excel文件: {output_file}")
         
-        # 验证文件是否成功生成
         if os.path.exists(output_file):
             file_size = os.path.getsize(output_file)
             logging.info(f"成功生成文件: {output_file}, 大小: {file_size} 字节")
@@ -582,37 +599,46 @@ def calculate_commute_times(excel_file, target_address, progress_callback):
         logging.error(traceback.format_exc())
         raise
 
-def get_baidu_commute_time(origin, destination, mode):
-    """
-    调用百度地图API获取通勤时间
-    
-    Args:
-        origin (tuple): 起点坐标 (纬度, 经度)
-        destination (tuple): 终点坐标 (纬度, 经度)
-        mode (str): 交通方式 ('bicycling' 或 'transit')
-    
-    Returns:
-        str: 通勤时间
-    """
-    ak = os.getenv('BAIDU_MAP_AK')  # 从环境变量获取百度地图API密钥
+def get_baidu_commute_time(origin, destination):
+    ak = os.getenv('BAIDU_MAP_AK')
     if not ak:
         raise ValueError("未设置百度地图API密钥")
     
-    url = f"http://api.map.baidu.com/directionlite/v1/{mode}"
+    distance = geodesic(origin, destination).kilometers
+    
+    best_time = float('inf')
+    best_mode = None
+    
+    if distance <= 5:
+        url = f"http://api.map.baidu.com/directionlite/v1/riding"
+        params = {
+            "origin": f"{origin[0]},{origin[1]}",
+            "destination": f"{destination[0]},{destination[1]}",
+            "ak": ak
+        }
+        response = requests.get(url, params=params)
+        data = response.json()
+        if data['status'] == 0 and 'result' in data and 'routes' in data['result']:
+            duration = data['result']['routes'][0]['duration'] / 60
+            if duration < best_time:
+                best_time = duration
+                best_mode = 'riding'
+    
+    url = f"http://api.map.baidu.com/directionlite/v1/transit"
     params = {
         "origin": f"{origin[0]},{origin[1]}",
         "destination": f"{destination[0]},{destination[1]}",
         "ak": ak
     }
-    
     response = requests.get(url, params=params)
     data = response.json()
+    if data['status'] == 0 and 'result' in data and 'routes' in data['result']:
+        duration = data['result']['routes'][0]['duration'] / 60
+        if duration < best_time:
+            best_time = duration
+            best_mode = 'transit'
     
-    if data['status'] == 0:
-        duration = data['result']['routes'][0]['duration']
-        return f"{duration // 60}分钟"
-    else:
-        return "无法获取"
+    return best_time, best_mode
 
 def check_baidu_api_key():
     ak = os.getenv('BAIDU_MAP_AK')
