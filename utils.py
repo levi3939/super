@@ -17,6 +17,10 @@ import pandas as pd
 from tkinter import Tk, filedialog
 import os
 import tkinter as tk
+from geopy.geocoders import Nominatim
+from geopy.distance import geodesic
+import openpyxl
+import traceback
 
 # 加载环境变量
 load_dotenv()
@@ -110,7 +114,7 @@ def parse_order_with_api(order_text):
                     "content": (
                         "你是一个专门用于解析订单信息的助手。请从给定的订单文本中提取以下信息："
                         "地址、科目、上课时间、要求、价格、老师性别、学生情况。"
-                        "请以JSON格式返回结果，键名为上述字段名。不要包含任何额外的解释或格式。"
+                        "请以JSON格式返回结果，键名为上述字段名。不要包含何额外的解释或格式。"
                     ),
                 },
                 {
@@ -192,7 +196,7 @@ def allowed_file(filename):
     Returns:
         bool: 如果是允许的文件类型则返回 True，否则返回 False。
     """
-    ALLOWED_EXTENSIONS = {'doc', 'docx'}
+    ALLOWED_EXTENSIONS = {'doc', 'docx', 'xlsx', 'xls'}
     return '.' in filename and \
            filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
@@ -233,7 +237,7 @@ def clean_data_with_api(batch: str) -> List[str]:
                 {
                     "role": "system",
                     "content": (
-                        "你是一个专门用于清理和格式化订单数据的助手。"
+                        "是专门用于清理和格式化订单数据的助手。"
                         "请删除所有无关信息，只保留有效的订单数据。"
                         "请判断订单的分割点，并将每个单作为单的条目返回。"
                         "请将清理后的订单列表以 JSON 数组的形式返回，每个元素是一个订单的字符串。"
@@ -254,7 +258,7 @@ def clean_data_with_api(batch: str) -> List[str]:
         # 移除代码块标记（如果有）
         cleaned_data = cleaned_data.strip()
 
-        # 正则表达式匹配 ``` 开头的代码块
+        # 正则表达匹配 ``` 开头的代码块
         import re
 
         # 匹配 ``` 开头和结尾的内容，包括可能的语言标识
@@ -282,7 +286,7 @@ def clean_data_with_api(batch: str) -> List[str]:
 
             # 尝试修正常见的 JSON 格式错误
             cleaned_data = cleaned_data.replace("'", "\"")  # 替换单引号为双引号
-            cleaned_data = re.sub(r",\s*]", "]", cleaned_data)  # 去除末尾多余的逗号
+            cleaned_data = re.sub(r",\s*]", "]", cleaned_data)  # 去末尾多余的逗号
 
             try:
                 orders_list = json.loads(cleaned_data)
@@ -362,24 +366,39 @@ def remove_duplicates(progress_callback):
         int: 删除的重复订单数量
     """
     try:
+        # 首先检查是否存在任何重复
+        duplicate_count = db_session.query(
+            Order.original_text, func.count(Order.id)
+        ).group_by(Order.original_text).having(func.count(Order.id) > 1).count()
+
+        logging.info(f"检测到 {duplicate_count} 组重复订单")
+
+        if duplicate_count == 0:
+            logging.info("数据库中没有重复订单")
+            return 0
+
         # 查找重复的订单
         duplicates = db_session.query(
             Order.original_text,
             func.count(Order.id).label('count'),
-            func.max(Order.id).label('max_id')  # 使用 max 而不是 min
+            func.max(Order.id).label('max_id')
         ).group_by(Order.original_text).having(func.count(Order.id) > 1).all()
+
+        logging.info(f"找到 {len(duplicates)} 组重复订单")
 
         total_duplicates = len(duplicates)
         total_removed = 0
         for i, duplicate in enumerate(duplicates):
+            logging.info(f"处理重复组 {i+1}/{total_duplicates}: 原始文本 '{duplicate.original_text[:50]}...'")
             # 删除除最后一个实例外的所有重复订单
             removed = db_session.query(Order).filter(
                 Order.original_text == duplicate.original_text,
-                Order.id != duplicate.max_id  # 保留 max_id 对应的记录
+                Order.id != duplicate.max_id
             ).delete(synchronize_session=False)
             total_removed += removed
+            logging.info(f"从该组中删除了 {removed} 个重复订单")
             
-            progress = (i + 1) / total_duplicates * 100
+            progress = (i + 1) / total_duplicates * 100 if total_duplicates > 0 else 100
             progress_callback(progress, f"已处理 {i + 1}/{total_duplicates} 组重复订单")
 
         db_session.commit()
@@ -401,7 +420,7 @@ def parse_and_export_orders(progress_callback):
         )).all()
         
         total_orders = len(unprocessed_orders)
-        logging.info(f"找到 {total_orders} 个未解析的订单")
+        logging.info(f"找 {total_orders} 个未解析的订单")
 
         parsed_data = []
         for i, order in enumerate(unprocessed_orders):
@@ -428,7 +447,7 @@ def parse_and_export_orders(progress_callback):
                     '原始订单': order.original_text
                 })
             else:
-                logging.warning(f"订单 {order.id} 解析失败")
+                logging.warning(f" {order.id} 析失败")
             
             progress = (i + 1) / total_orders * 90  # 解析占90%的进度
             progress_callback(progress, f"已解析 {i + 1}/{total_orders} 个订单")
@@ -446,5 +465,162 @@ def parse_and_export_orders(progress_callback):
 
     except Exception as e:
         db_session.rollback()
-        logging.error(f"解析订单时发生错误：{str(e)}")
+        logging.error(f"解析订单时生错误：{str(e)}")
         raise
+
+def read_excel_file(file_path):
+    """
+    读取Excel文件并返回DataFrame。
+
+    Args:
+        file_path (str): Excel文件的路径
+
+    Returns:
+        pd.DataFrame: 包含Excel数据的DataFrame
+    """
+    try:
+        df = pd.read_excel(file_path, engine='openpyxl')
+        return df
+    except Exception as e:
+        logging.error(f"读取Excel文件时发生错误: {str(e)}")
+        raise
+
+def geocode_baidu(address):
+    ak = os.getenv('BAIDU_MAP_AK')
+    if not ak:
+        raise ValueError("未设置百度地图API密钥")
+    
+    url = "http://api.map.baidu.com/geocoding/v3/"
+    params = {
+        "address": address,
+        "output": "json",
+        "ak": ak
+    }
+    
+    response = requests.get(url, params=params)
+    data = response.json()
+    
+    if data['status'] == 0:
+        result = data['result']
+        return (result['location']['lat'], result['location']['lng'])
+    else:
+        return None
+
+def calculate_commute_times(excel_file, target_address, progress_callback):
+    check_baidu_api_key()
+    logging.info(f"开始处理文件: {excel_file}")
+    logging.info(f"目标地址: {target_address}")
+
+    try:
+        # 读取Excel文件
+        df = read_excel_file(excel_file)
+        logging.info(f"成功读取Excel文件，共 {len(df)} 行数据")
+        logging.info(f"列名: {df.columns.tolist()}")
+        
+        # 确保必要的列存在
+        required_columns = ['地址', '科目', '上课时间', '要求', '价格', '老师性别', '学生情况', '原始订单']
+        missing_columns = [col for col in required_columns if col not in df.columns]
+        if missing_columns:
+            raise ValueError(f"Excel文件缺少以下必要的列: {', '.join(missing_columns)}")
+        
+        # 获取目标地址的坐标
+        target_coords = geocode_baidu(target_address)
+        if not target_coords:
+            raise ValueError("无法获取目标地址的坐标")
+        logging.info(f"目标地址坐标: {target_coords}")
+        
+        # 初始化新列
+        df['通勤时间'] = ''
+        
+        total_rows = len(df)
+        for index, row in df.iterrows():
+            address = row['地址']
+            try:
+                # 获取订单地址的坐标
+                coords = geocode_baidu(address)
+                if coords:
+                    # 计算直线距离
+                    distance = geodesic(coords, target_coords).kilometers
+                    
+                    # 根据距离选择交通方式并计算时间
+                    if distance < 5:  # 假设5公里以内用自行车
+                        mode = "bicycling"
+                    else:
+                        mode = "transit"
+                    
+                    # 调用百度地图API获取实际通勤时间
+                    commute_time = get_baidu_commute_time(coords, target_coords, mode)
+                    
+                    df.at[index, '通勤时间'] = commute_time
+                    logging.info(f"地址 '{address}' 的通勤时间: {commute_time}")
+                else:
+                    df.at[index, '通勤时间'] = '地址无法解析'
+                    logging.warning(f"无法解析地址: {address}")
+            except Exception as e:
+                df.at[index, '通勤时间'] = f'错误: {str(e)}'
+                logging.error(f"处理地址 '{address}' 时发生错误: {str(e)}")
+                logging.error(traceback.format_exc())
+            
+            # 更新进度
+            progress = (index + 1) / total_rows * 100
+            progress_callback(progress, f"已处理 {index + 1}/{total_rows} 个地址")
+        
+        # 修改这部分
+        exports_dir = os.path.join(os.getcwd(), 'exports')
+        output_filename = f"orders_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}_with_commute_times.xlsx"
+        output_file = os.path.join(exports_dir, output_filename)
+        df.to_excel(output_file, index=False)
+        logging.info(f"尝试生成包含通勤时间的Excel文件: {output_file}")
+        
+        # 验证文件是否成功生成
+        if os.path.exists(output_file):
+            file_size = os.path.getsize(output_file)
+            logging.info(f"成功生成文件: {output_file}, 大小: {file_size} 字节")
+        else:
+            logging.error(f"文件生成失败: {output_file}")
+            raise FileNotFoundError(f"无法生成文件: {output_file}")
+        
+        return output_file
+    except Exception as e:
+        logging.error(f"计算通勤时间时发生错误: {str(e)}")
+        logging.error(traceback.format_exc())
+        raise
+
+def get_baidu_commute_time(origin, destination, mode):
+    """
+    调用百度地图API获取通勤时间
+    
+    Args:
+        origin (tuple): 起点坐标 (纬度, 经度)
+        destination (tuple): 终点坐标 (纬度, 经度)
+        mode (str): 交通方式 ('bicycling' 或 'transit')
+    
+    Returns:
+        str: 通勤时间
+    """
+    ak = os.getenv('BAIDU_MAP_AK')  # 从环境变量获取百度地图API密钥
+    if not ak:
+        raise ValueError("未设置百度地图API密钥")
+    
+    url = f"http://api.map.baidu.com/directionlite/v1/{mode}"
+    params = {
+        "origin": f"{origin[0]},{origin[1]}",
+        "destination": f"{destination[0]},{destination[1]}",
+        "ak": ak
+    }
+    
+    response = requests.get(url, params=params)
+    data = response.json()
+    
+    if data['status'] == 0:
+        duration = data['result']['routes'][0]['duration']
+        return f"{duration // 60}分钟"
+    else:
+        return "无法获取"
+
+def check_baidu_api_key():
+    ak = os.getenv('BAIDU_MAP_AK')
+    if not ak:
+        raise ValueError("未设置百度地图API密钥。请在 .env 文件中添加 BAIDU_MAP_AK=你的密钥")
+    return ak
+

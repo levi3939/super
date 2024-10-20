@@ -114,6 +114,12 @@
             <span class="progress-bar-fill" style="width: 0%;"></span>
         </div>
         <div id="statusMessage"></div>
+        <hr>
+        <h3>计算通勤时间</h3>
+        <input type="file" id="excelFile" accept=".xlsx,.xls">
+        <input type="text" id="targetAddress" placeholder="输入目标地址">
+        <button id="calculateCommuteBtn" class="btn">计算通勤时间</button>
+        <div id="commuteMessage"></div>
     </div>
 
     <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
@@ -183,6 +189,55 @@
                     }
                 });
                 updateProgress(0, '开始解析和导出订单...');
+            });
+
+            $('#calculateCommuteBtn').click(function() {
+                var targetAddress = $('#targetAddress').val();
+                var file = $('#excelFile')[0].files[0];
+                
+                if (!file) {
+                    alert('请选择Excel文件');
+                    return;
+                }
+                
+                if (!targetAddress) {
+                    alert('请输入目标地址');
+                    return;
+                }
+                
+                var formData = new FormData();
+                formData.append('file', file);
+                formData.append('target_address', targetAddress);
+                
+                $.ajax({
+                    url: '/calculate_commute_times',
+                    type: 'POST',
+                    data: formData,
+                    processData: false,
+                    contentType: false,
+                    success: function(response) {
+                        $('#commuteMessage').text('通勤时间计算完成').removeClass('error').addClass('success').show();
+                        if (response.file_path) {
+                            var downloadLink = $('<a>')
+                                .attr('href', '/download/' + encodeURIComponent(response.file_path))
+                                .attr('download', '')
+                                .text('下载包含通勤时间的 Excel 文件');
+                            $('#commuteMessage').append('<br>').append(downloadLink);
+                        } else {
+                            $('#commuteMessage').append('<br>生成文件失败，请检查日志');
+                        }
+                    },
+                    error: function(xhr, status, error) {
+                        var errorMessage = '计算通勤时间时发生错误: ';
+                        if (xhr.responseJSON && xhr.responseJSON.error) {
+                            errorMessage += xhr.responseJSON.error;
+                        } else {
+                            errorMessage += error;
+                        }
+                        $('#commuteMessage').text(errorMessage).removeClass('success').addClass('error').show();
+                        console.error('详细错误信息:', xhr.responseText);
+                    }
+                });
             });
         });
     </script>

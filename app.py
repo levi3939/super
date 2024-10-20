@@ -6,16 +6,24 @@ import os
 from dotenv import load_dotenv
 from database import db_session, init_db, test_db_connection
 from models import Order
-from utils import process_orders, parse_orders, export_to_excel, allowed_file, remove_duplicates  # 删除 remove_duplicates
+from utils import (
+    process_orders, 
+    parse_orders, 
+    export_to_excel, 
+    allowed_file, 
+    remove_duplicates,
+    calculate_commute_times  # 添加这个导入
+)
 import logging
 from docx import Document
 from sqlalchemy import func
 from utils import parse_and_export_orders
 import json
 from werkzeug.utils import secure_filename
+import traceback
 
 # 确保这行在其他导入之前
-load_dotenv()
+load_dotenv()  # 这行会加载 .env 文件中的环境变量
 
 logging.basicConfig(level=logging.DEBUG)
 logging.debug(f"DATABASE_URL in app.py: {os.getenv('DATABASE_URL')}")
@@ -36,6 +44,10 @@ logging.basicConfig(filename='order_processing.log', level=logging.INFO,
 
 # 据库初始化
 init_db()
+
+exports_dir = os.path.join(os.getcwd(), 'exports')
+if not os.path.exists(exports_dir):
+    os.makedirs(exports_dir)
 
 @app.teardown_appcontext
 def shutdown_session(exception=None):
@@ -103,24 +115,76 @@ def get_batches():
 @app.route('/remove_duplicates', methods=['POST'])
 def handle_remove_duplicates():
     try:
+        logging.info("开始执行去重操作")
+        total_orders_before = db_session.query(Order).count()
+        logging.info(f"去重前订单总数: {total_orders_before}")
+
         removed_count = remove_duplicates(progress_callback)
+
+        total_orders_after = db_session.query(Order).count()
+        logging.info(f"去重后订单总数: {total_orders_after}")
+        logging.info(f"去重操作完成，删除了 {removed_count} 个重复订单")
+
         return jsonify({"message": f"成功删除 {removed_count} 个重复订单", "removed_count": removed_count}), 200
     except Exception as e:
+        logging.error(f"去重操作失败：{str(e)}")
         return jsonify({"error": str(e)}), 500
 
 @app.route('/download/<path:filename>', methods=['GET'])
 def download_file(filename):
-    # 获取当前工作目录
-    current_dir = os.getcwd()
-    # 构建完整的文件路径
-    file_path = os.path.join(current_dir, 'exports', os.path.basename(filename))
+    exports_dir = os.path.join(os.getcwd(), 'exports')
+    file_path = os.path.join(exports_dir, filename)
     
-    # 检查文件是否存在
+    logging.info(f"尝试下载文件: {file_path}")
+    
     if not os.path.exists(file_path):
+        logging.error(f"文件不存在: {file_path}")
         return jsonify({"error": "文件不存在"}), 404
     
-    # 如果文件存在,则发送文件
-    return send_file(file_path, as_attachment=True)
+    try:
+        return send_file(file_path, as_attachment=True)
+    except Exception as e:
+        logging.error(f"发送文件时发生错误: {str(e)}")
+        return jsonify({"error": "文件发送失败"}), 500
+
+@app.route('/calculate_commute_times', methods=['POST'])
+def handle_calculate_commute_times():
+    try:
+        if 'file' not in request.files:
+            return jsonify({"error": "没有上传文件"}), 400
+        
+        file = request.files['file']
+        if file.filename == '':
+            return jsonify({"error": "没有选择文件"}), 400
+        
+        if file and allowed_file(file.filename):
+            filename = secure_filename(file.filename)
+            file_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+            file.save(file_path)
+            logging.info(f"成功保存上传的文件: {file_path}")
+            
+            target_address = request.form.get('target_address')
+            if not target_address:
+                return jsonify({"error": "未提供目标地址"}), 400
+            
+            new_file = calculate_commute_times(file_path, target_address, progress_callback)
+            
+            if os.path.exists(new_file):
+                file_size = os.path.getsize(new_file)
+                logging.info(f"文件生成成功: {new_file}, 大小: {file_size} 字节")
+                return jsonify({
+                    "message": "通勤时间计算完成",
+                    "file_path": os.path.basename(new_file)  # 只返回文件名，不包含完整路径
+                }), 200
+            else:
+                logging.error(f"文件不存在: {new_file}")
+                return jsonify({"error": "生成文件失败"}), 500
+        else:
+            return jsonify({"error": "不允许的文件类型"}), 400
+    except Exception as e:
+        logging.error(f"计算通勤时间时发生错误: {str(e)}")
+        logging.error(traceback.format_exc())
+        return jsonify({"error": str(e)}), 500
 
 def progress_callback(progress, message):
     socketio.emit('progress_update', {'progress': progress, 'message': message})
